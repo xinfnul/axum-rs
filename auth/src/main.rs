@@ -1,12 +1,15 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use anyhow::Context;
 use axum::{Json, Router, http::StatusCode, routing::get};
 use tokio::signal;
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -20,8 +23,6 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time())
         .init();
 
-    let _ = dotenvy::dotenv();
-
     let app: Router<_> = Router::new()
         .route(
             "/",
@@ -32,7 +33,12 @@ async fn main() -> anyhow::Result<()> {
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "resource not found",})),
             )
-        });
+        })
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(10),
+        ))
+        .layer(TraceLayer::new_for_http());
 
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "5000".to_string())
@@ -48,32 +54,45 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "listening on");
 
     let _ = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .with_graceful_shutdown(async {
+            if let Err(error) = shutdown_signal().await {
+                tracing::error!(%error, "shutdown handler failed");
+            }
+        })
+        .await
+        .context("HTTP server failed")?;
 
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal() -> anyhow::Result<()> {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
-            .expect("failed to install Ctrl+C handler");
+            .context("failed to install Ctrl+C handler")?;
+
+        Ok::<(), anyhow::Error>(())
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
+        let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .context("failed to install SIGTERM handler")?;
+
+        terminate.recv().await;
+
+        Ok::<(), anyhow::Error>(())
     };
 
     #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    let terminate = std::future::pending::<anyhow::Result<()>>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        result = ctrl_c => result?,
+        result = terminate => result?,
     }
+
+    tracing::info!("shutdown signal received");
+
+    Ok(())
 }
