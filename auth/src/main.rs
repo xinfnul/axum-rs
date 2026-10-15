@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::Context;
+use auth::config::Config;
 use axum::{Json, Router, http::StatusCode, routing::get};
 use tokio::signal;
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
@@ -22,6 +23,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .with(tracing_subscriber::fmt::layer().without_time())
         .init();
+
+    let _config = Config::from_env()?;
+
+    // tracing::info!(config = ?config, "server configuration");
 
     let app: Router<_> = Router::new()
         .route(
