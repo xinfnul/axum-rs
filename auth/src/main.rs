@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::Context;
-use auth::config::Config;
+use auth::{config::Config, error::AppError};
 use axum::{Json, Router, http::StatusCode, routing::get};
 use tokio::signal;
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
@@ -33,12 +33,7 @@ async fn main() -> anyhow::Result<()> {
             "/",
             get(|| async { Json(serde_json::json!({"status": "OK"})) }),
         )
-        .fallback(|| async {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "resource not found",})),
-            )
-        })
+        .fallback(|| async { AppError::NotFound })
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(10),
