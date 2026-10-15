@@ -1,8 +1,9 @@
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::Context;
-use auth::{config::Config, error::AppError};
+use auth::{config::Config, error::AppError, state::AppState};
 use axum::{Json, Router, http::StatusCode, routing::get};
+use sqlx::postgres::PgPoolOptions;
 use tokio::signal;
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -24,9 +25,17 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time())
         .init();
 
-    let _config = Config::from_env()?;
+    let config = Config::from_env()?;
 
     // tracing::info!(config = ?config, "server configuration");
+
+    let db = PgPoolOptions::new()
+        .max_connections(10)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&config.database_url)
+        .await?;
+
+    let state = AppState::new(db, config.clone());
 
     let app: Router<_> = Router::new()
         .route(
@@ -34,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
             get(|| async { Json(serde_json::json!({"status": "OK"})) }),
         )
         .fallback(|| async { AppError::NotFound })
+        .with_state(state)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(10),
